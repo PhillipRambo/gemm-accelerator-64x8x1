@@ -1,0 +1,13 @@
+rtl/common/metrics_pkg.sv
+
+rtl/common/ceiling_counter.sv
+rtl/gemm/mac_pe_bank.sv
+rtl/gemm/mac_array.sv
+rtl/gemm/a_tile_buffer.sv
+rtl/gemm/b_buffer.sv
+rtl/gemm/output_buffer.sv
+rtl/gemm/gemm_controller.sv
+rtl/gemm/gemm_accelerator_top.sv
+
+rtl/common/single_port_memory.sv
+tb/tb_gemm_accelerator.sv

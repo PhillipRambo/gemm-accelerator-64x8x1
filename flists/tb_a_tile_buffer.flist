@@ -1,0 +1,5 @@
+rtl/common/metrics_pkg.sv
+
+rtl/gemm/a_tile_buffer.sv
+
+tb/tb_a_tile_buffer.sv

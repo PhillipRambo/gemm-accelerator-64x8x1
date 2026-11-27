@@ -1,0 +1,11 @@
+# Simulation outputs (Verilator and Questasim)
+obj_dir/
+bin/
+/work
+/questasim.do
+/transcript
+/vsim.wlf
+*.vcd
+*covhtmlreport
+*report.txt
+build.log

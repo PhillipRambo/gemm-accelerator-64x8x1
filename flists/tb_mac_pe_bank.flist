@@ -1,0 +1,5 @@
+rtl/common/metrics_pkg.sv
+
+rtl/gemm/mac_pe_bank.sv
+
+tb/tb_mac_pe_bank.sv

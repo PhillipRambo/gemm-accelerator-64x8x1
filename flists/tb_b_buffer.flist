@@ -1,0 +1,5 @@
+rtl/common/metrics_pkg.sv
+
+rtl/gemm/b_buffer.sv
+
+tb/tb_b_buffer.sv
