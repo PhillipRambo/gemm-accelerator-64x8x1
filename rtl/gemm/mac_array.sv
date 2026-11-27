@@ -1,29 +1,30 @@
 //---------------------------
 // MAC array
+//
 // Description:
-// This module builds the spatial MAC array of the accelerator out of
-// mac_pe_bank instances. It contains no arithmetic of its own: a
-// generate loop copies the PE ArrM times during elaboration.
+// Builds the MAC array from ArrM mac_pe_bank instances with a generate
+// loop. Every PE gets one row of the A tile and all PEs get the same
+// B column.
 //
 // The final design is 64 x 8 x 1 (M x K x N) = 512 multipliers
-
+//
 // Parameters:
-// - InDataWidth  : Width of the input data (int8)
-// - OutDataWidth : Width of the output data (int32)
-// - ArrM         : Number of PEs (parallel along M)
-// - ArrK         : Number of inputs per PE (parallel along K)
-// - NumAcc       : Number of accumulators per PE (output columns per block)
+// - InDataWidth  : Width of the input data
+// - OutDataWidth : Width of the output data
+// - ArrM         : Number of PEs
+// - ArrK         : Inputs per PE
+// - NumAcc       : Accumulators per PE
 //
 // Ports:
 // - clk_i        : Clock input
 // - rst_ni       : Active-low reset input
-// - a_i          : A tile, a_i[m][k] (ArrM x ArrK values)
-// - b_i          : One column of B, b_i[k] (ArrK values), broadcast to all PEs
-// - acc_sel_i    : Which accumulator (column of the block) to update this cycle
-// - valid_i      : A and B inputs are valid, so compute this cycle
-// - init_save_i  : First k-step of a column: load instead of accumulate
+// - a_i          : A tile, a_i[m][k]
+// - b_i          : B column for all PEs, b_i[k]
+// - acc_sel_i    : Accumulator to update
+// - valid_i      : Inputs are valid
+// - init_save_i  : Load instead of add (first k-step)
 // - acc_clr_i    : Clear all accumulators
-// - c_o          : All accumulators, c_o[m][j] = row m, column j of the block
+// - c_o          : All accumulators, c_o[m][j]
 //---------------------------
 
 module mac_array #(
@@ -45,7 +46,7 @@ module mac_array #(
 );
 
   //---------------------------
-  // PE column: ArrM PEs, one per row of the output tile
+  // One PE per row of the tile
   //---------------------------
   genvar m;
   for (m = 0; m < ArrM; m++) begin : g_m
@@ -57,7 +58,7 @@ module mac_array #(
     ) i_pe (
       .clk_i ( clk_i),
       .rst_ni ( rst_ni),
-      .a_i ( a_i[m]),   // row m of A: one row per PE
+      .a_i ( a_i[m]),   // row m of the A tile
       .b_i ( b_i),   // the same B column for all PEs
       .acc_sel_i ( acc_sel_i),
       .a_valid_i ( valid_i),

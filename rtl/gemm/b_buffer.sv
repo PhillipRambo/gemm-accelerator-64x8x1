@@ -2,21 +2,20 @@
 // B buffer
 //
 // Description:
-// This module holds the B column (ArrK int8 = 8 B) that is broadcast to all
-// PEs of the MAC array. Every compute cycle needs a new column n, so the
-// buffer is loaded with one SRAM B word (port B = 8 B) per cycle. When the
-// controller stalls, load_i stays low and the column is kept.
+// Holds one column of B (8 int8) that goes to all PEs. A new column is
+// loaded from SRAM B every compute cycle. When load_i is low the column
+// is kept.
 //
 // Parameters:
-// - InDataWidth : Width of the input data (int8)
-// - ArrK        : Number of values in the column (inputs per PE)
+// - InDataWidth : Width of the input data
+// - ArrK        : Values in the column
 //
 // Ports:
 // - clk_i       : Clock input
 // - rst_ni      : Active-low reset input
-// - load_i      : Load a new column from SRAM B
-// - b_i         : The SRAM B word, b_i[k] (ArrK values)
-// - b_o         : The stored column, b_o[k], to all PEs
+// - load_i      : Load a new column
+// - b_i         : SRAM B word, b_i[k]
+// - b_o         : Stored column to all PEs, b_o[k]
 //---------------------------
 
 module b_buffer #(
@@ -39,7 +38,8 @@ module b_buffer #(
   end
 
   //--------------------------------
-  // Area logging (Table 3: 1 per 32-bit register)
+  // Area logging
+  // 1 per 32-bit register: 8 B / 4 B = 2
   //--------------------------------
   initial begin
     #0;
@@ -48,8 +48,8 @@ module b_buffer #(
   end
 
   //--------------------------------
-  // Energy logging (Table 3: 1 per 32-bit register update)
-  // Every load updates 64 bits: 2 units. Reading is free.
+  // Energy logging
+  // Every load writes 64 bits = 2. Reading is free.
   //--------------------------------
   always @(posedge clk_i) begin
     if (rst_ni && load_i) begin

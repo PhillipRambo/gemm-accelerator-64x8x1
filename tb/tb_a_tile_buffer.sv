@@ -1,30 +1,22 @@
 //--------------------------
 // A tile buffer testbench
-// - Unit test for a_tile_buffer (two halves of 64 x 8 int8, written in 5 words of 104 B)
-//
-// The golden model keeps both halves and which one is active. A write puts
-// rows 13w ... 13w+12 of word w into the shadow half (rows past 63 are the
-// padding of the last word and are dropped). A swap exchanges the halves.
-// The write data is random everywhere, the padding bytes included.
-//
-// Timing: inputs change on the falling edge and the DUT updates on the rising
-// edge. Every cycle, cycle() first checks the whole active tile against the
-// golden model (the result of the previous cycle) and then drives the next
-// inputs, so the tests also show that writing the shadow half never changes
-// what the array sees.
+// - Unit test for a_tile_buffer (two halves of 64 x 8 int8, 5 words per tile)
+// - The golden model keeps both halves and which one is active. A write puts
+//   13 rows of word w into the shadow half, rows past 63 are padding.
+// - Inputs change on the falling edge. Every cycle the active tile is
+//   compared with the golden model, so a write to the shadow half may never
+//   change what the array sees.
 //
 // Tests:
-//   1. Reset          : the active tile is 0
-//   2. Fill the shadow: 5 writes without a swap: the active tile does not change
-//   3. Swap           : the written tile appears all at once
-//   4. Like the loop  : tile t+1 is written while tile t is active, with stall
-//                       cycles between the writes, and the swap comes together
-//                       with the last word
-//   5. Any order      : the words in reverse order and one word rewritten
-//                       (the last write wins)
-//   6. Swap only      : two swaps without writes go back to the same tile
-//   7. Energy         : writing one tile costs 128 (512 B, an 8-bit register = 1/4)
-//   8. Area           : metrics_pkg::area = 2 halves * 512 B / 4 = 256
+//   1. Reset: the active tile is 0
+//   2. 5 writes without a swap: the active tile does not change
+//   3. Swap: the new tile shows up at once
+//   4. Like the controller: write tile t+1 while tile t is active,
+//      with stalls, and swap together with the last word
+//   5. Words in reverse order and one word written twice
+//   6. Two swaps without writes give the same tile again
+//   7. Energy of one tile = 128
+//   8. Area = 2 * 512 B / 4 = 256
 //
 // Run from the folder with the Makefile (see README.md):
 //   make TEST_MODULE=tb_a_tile_buffer run
@@ -49,7 +41,7 @@ module tb_a_tile_buffer;
   parameter int unsigned NumTiles        = 20;  // test 4
   parameter int unsigned MaxStall        = 2;   // test 4: stall cycles between writes
   parameter int unsigned MaxErrorsToShow = 5;   // per test
-  parameter int unsigned TimeoutCycles   = 100_000;  // safety net (cycles)
+  parameter int unsigned TimeoutCycles   = 100_000;  // stop after this many cycles
 
   //---------------------------
   // Wires
@@ -66,7 +58,7 @@ module tb_a_tile_buffer;
   int golden [2][ArrM][ArrK];
   int golden_active;
 
-  // Bookkeeping per test and in total
+  // Counters per test and in total
   string       test_name;
   int unsigned test_errors;
   int unsigned test_cycles;
@@ -107,7 +99,7 @@ module tb_a_tile_buffer;
     golden_active = 0;
   endtask
 
-  // Predict what the DUT does with the inputs driven now at the next rising edge
+  // What the DUT should do at the next rising edge
   task automatic golden_update();
     if (wr_en_i) begin
       for (int r = 0; r < RowsPerWord; r++) begin
@@ -126,7 +118,7 @@ module tb_a_tile_buffer;
   // Stimulus and checking
   //---------------------------
 
-  // Compare the whole active tile with the golden model right now
+  // Compare the active tile with the golden model
   task automatic check_all();
     test_cycles++;
     for (int m = 0; m < ArrM; m++) begin
@@ -143,8 +135,7 @@ module tb_a_tile_buffer;
     end
   endtask
 
-  // One clock cycle: on the falling edge, check the result of the previous
-  // cycle, then drive new inputs and update the golden model
+  // One cycle: check the outputs, then drive new inputs
   task automatic cycle(input bit wr_en, input int unsigned word, input bit swap);
     @(negedge clk_i);
     check_all();
@@ -173,7 +164,7 @@ module tb_a_tile_buffer;
     test_cycles = 0;
   endtask
 
-  // One idle cycle checks the last driven cycle, then report the test
+  // Check the last cycle and print the result
   task automatic end_test();
     idle();
     num_checks++;
@@ -203,19 +194,18 @@ module tb_a_tile_buffer;
     repeat (3) idle();
     end_test();
 
-    // 2. Fill the shadow half, no swap: the array must not see it
+    // 2. Fill the shadow half without a swap
     start_test("2. writes to the shadow half do not change the active tile");
     for (int w = 0; w < NumWords; w++) write(w, 1'b0);
     repeat (3) idle();
     end_test();
 
-    // 3. Swap: the tile written in test 2 becomes active
+    // 3. Swap, the tile from test 2 becomes active
     start_test("3. swap");
     cycle(1'b0, 0, 1'b1);
     end_test();
 
-    // 4. Like the controller: write tile t+1 while tile t is active,
-    //    with stalls, and swap together with the last word
+    // 4. Like the controller
     start_test($sformatf("4. %0d tiles back to back, swap with the last word", NumTiles));
     for (int t = 0; t < NumTiles; t++) begin
       for (int w = 0; w < NumWords; w++) begin
@@ -225,20 +215,20 @@ module tb_a_tile_buffer;
     end
     end_test();
 
-    // 5. Words in reverse order, then word 2 again: the last write wins
+    // 5. Words in reverse order, then word 2 again
     start_test("5. words in any order, a rewritten word");
     for (int w = NumWords - 1; w >= 0; w--) write(w, 1'b0);
     write(2, 1'b0);
     cycle(1'b0, 0, 1'b1);
     end_test();
 
-    // 6. Two swaps without writes: back to the same tile
+    // 6. Two swaps without writes
     start_test("6. swap without writes");
     cycle(1'b0, 0, 1'b1);
     cycle(1'b0, 0, 1'b1);
     end_test();
 
-    // 7. Energy of one tile: 13 + 13 + 13 + 13 + 12 rows of 8 B = 512 B -> 128
+    // 7. Energy of one tile: 512 B -> 128
     start_test("7. energy of one tile = 128");
     energy_before = metrics_pkg::energy;
     for (int w = 0; w < NumWords; w++) write(w, w == NumWords - 1);
@@ -250,7 +240,7 @@ module tb_a_tile_buffer;
     end
     end_test();
 
-    // 8. Area: two halves of ArrM x ArrK int8
+    // 8. Area
     expected_area = 2 * ArrM * ArrK * InDataWidth / 32;
     num_checks++;
     if (metrics_pkg::area == expected_area) begin
@@ -276,8 +266,7 @@ module tb_a_tile_buffer;
     end
   end
 
-  // Safety net: stop if the test hangs. Counted in clock cycles, so it does
-  // not depend on the time unit of the simulator.
+  // Stop if the test hangs
   initial begin
     repeat (TimeoutCycles) @(posedge clk_i);
     $fatal(1, "Timeout after %0d cycles", TimeoutCycles);

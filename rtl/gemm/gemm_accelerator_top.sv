@@ -2,34 +2,30 @@
 // GeMM/GeMV accelerator top module (64 x 8 x 1, nb = 8)
 //
 // Description:
-// This module connects the blocks of the accelerator to the three SRAMs.
-// It has the same I/O as the course's 1-MAC baseline, only the SRAM data
-// ports are wider
+// Connects the controller, the buffers and the MAC array to the three
+// SRAMs. Same I/O as the course's 1-MAC baseline, only the SRAM data
+// ports are wider. There is no logic here, only wiring.
 //
-// The controller runs the loop counters, the A fetch, the handshakes and
-// all address generation (see gemm_controller.sv). This module contains no
-// logic of its own, only the wiring.
-//
-// Port widths: A 832 + B 64 + C 128 = 1024 bits (128 B), the maximum.
-// Multipliers: ArrM x ArrK = 64 x 8 = 512, the maximum.
+// Ports A + B + C = 832 + 64 + 128 = 1024 bits
+// Multipliers = 64 * 8 = 512
 //
 // Parameters:
-// - InDataWidth   : Width of the input data (int8)
-// - OutDataWidth  : Width of the output data (int32)
+// - InDataWidth   : Width of the input data
+// - OutDataWidth  : Width of the output data
 // - AddrWidth     : Width of the SRAM addresses
-// - SizeAddrWidth : Width of the size inputs (12 bits: M up to 3072)
-// - ArrM, ArrK    : PEs and inputs per PE of the MAC array (64 x 8)
-// - NumAcc        : Accumulators per PE = columns per block (nb = 8)
-// - RowsPerWord   : Tile rows in one SRAM A word (13, so 104 B)
-// - WordOutputs   : int32 outputs in one SRAM C word (4, so 16 B)
+// - SizeAddrWidth : Width of the size inputs
+// - ArrM, ArrK    : PEs and inputs per PE (64 x 8)
+// - NumAcc        : Accumulators per PE (nb = 8)
+// - RowsPerWord   : Tile rows in one SRAM A word (13)
+// - WordOutputs   : Values in one SRAM C word (4)
 //
 // Ports:
 // - clk_i, rst_ni  : Clock and active-low reset
-// - start_i        : Start signal to initiate the GeMM operation
-// - M/K/N_size_i   : Sizes of the workload (M x K) * (K x N)
-// - sram_a_*       : SRAM A read port (address, read enable, 104 B data)
-// - sram_b_*       : SRAM B read port (address, read enable, 8 B data)
-// - sram_c_*       : SRAM C write port (address, write enable, 16 B data)
+// - start_i        : Start a GeMM
+// - M/K/N_size_i   : Sizes of the workload
+// - sram_a_*       : SRAM A read port (104 B)
+// - sram_b_*       : SRAM B read port (8 B)
+// - sram_c_*       : SRAM C write port (16 B)
 // - done_o         : High in the cycle of the last SRAM C write
 //---------------------------
 
@@ -43,7 +39,7 @@ module gemm_accelerator_top #(
   parameter int unsigned NumAcc = 8,
   parameter int unsigned RowsPerWord = 13,
   parameter int unsigned WordOutputs = 4,
-  // Derived SRAM port widths in bits
+  // SRAM port widths in bits
   parameter int unsigned PortAWidth = RowsPerWord * ArrK * InDataWidth,   // 832
   parameter int unsigned PortBWidth = ArrK * InDataWidth,                 // 64
   parameter int unsigned PortCWidth = WordOutputs * OutDataWidth          // 128
@@ -70,7 +66,7 @@ module gemm_accelerator_top #(
   localparam int unsigned NumGroups = ArrM / WordOutputs;                     // 16
 
   //---------------------------
-  // Constraint checks of the assignment (at elaboration time)
+  // Check the limits of the assignment
   //---------------------------
   initial begin
     if (ArrM * ArrK > 512)
@@ -97,14 +93,14 @@ module gemm_accelerator_top #(
   logic mac_valid, init_save;
   logic [$clog2(NumAcc)-1:0] acc_sel;
   logic signed [ArrM-1:0][NumAcc-1:0][OutDataWidth-1:0] acc;
-  
+
   // Output buffer
   logic out_load, out_ready, out_wr_en;
   logic [$clog2(NumAcc+1)-1:0] out_num_cols;
   logic [$clog2(NumGroups)-1:0] out_grp;
 
   //---------------------------
-  // Controller: loop counters, A fetch, handshakes, address generation
+  // Controller
   //---------------------------
   gemm_controller #(
     .SizeAddrWidth  ( SizeAddrWidth ),
@@ -154,7 +150,7 @@ module gemm_accelerator_top #(
     .rst_ni      ( rst_ni         ),
     .wr_en_i     ( a_wr_en        ),
     .wr_word_i   ( a_wr_word      ),
-    .wr_data_i   ( sram_a_rdata_i ),  // one SRAM A word = 13 rows x 8 int8
+    .wr_data_i   ( sram_a_rdata_i ),  // 13 rows of 8 int8
     .swap_i      ( a_swap         ),
     .a_o         ( a_tile         )
   );
@@ -166,12 +162,12 @@ module gemm_accelerator_top #(
     .clk_i       ( clk_i          ),
     .rst_ni      ( rst_ni         ),
     .load_i      ( b_load         ),
-    .b_i         ( sram_b_rdata_i ),  // one SRAM B word = 8 int8 of one column
+    .b_i         ( sram_b_rdata_i ),  // 8 int8 of one B column
     .b_o         ( b_col          )
   );
 
   //---------------------------
-  // MAC array: 64 PEs, each 8 multipliers + adder tree + 8 accumulators
+  // MAC array
   //---------------------------
   mac_array #(
     .InDataWidth  ( InDataWidth  ),
@@ -187,12 +183,12 @@ module gemm_accelerator_top #(
     .acc_sel_i    ( acc_sel      ),
     .valid_i      ( mac_valid    ),
     .init_save_i  ( init_save    ),
-    .acc_clr_i    ( 1'b0         ),   // never needed: init_save starts every output
+    .acc_clr_i    ( 1'b0         ),   // not used, init_save starts every output
     .c_o          ( acc          )
   );
 
   //---------------------------
-  // Output buffer: takes a block in one cycle, drains 16 B per cycle
+  // Output buffer
   //---------------------------
   output_buffer #(
     .OutDataWidth ( OutDataWidth   ),
@@ -207,7 +203,7 @@ module gemm_accelerator_top #(
     .c_i          ( acc            ),
     .ready_o      ( out_ready      ),
     .wr_en_o      ( out_wr_en      ),
-    .col_o        ( /* unused */   ),   // the controller follows the columns via grp
+    .col_o        ( /* unused */   ),   // not needed, the controller uses grp
     .grp_o        ( out_grp        ),
     .data_o       ( sram_c_wdata_o )  // 4 int32 of one column
   );

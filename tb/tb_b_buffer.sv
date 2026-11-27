@@ -1,18 +1,15 @@
 //--------------------------
 // B buffer testbench
 // - Unit test for b_buffer (one B column of 8 int8)
-//
-// Timing: inputs change on the falling edge and the DUT updates on the rising
-// edge. Every cycle, cycle() first checks the stored column against the
-// golden model (the result of the previous cycle) and then drives the next
-// inputs.
+// - Inputs change on the falling edge, the stored column is checked
+//   every cycle.
 //
 // Tests:
-//   1. Reset     : the column is 0
-//   2. Streaming : a new column is loaded every cycle, like the loop does
-//   3. Hold      : load low while b_i keeps changing: the column is kept (stall)
-//   4. Energy    : one load costs 2 (64 bits)
-//   5. Area      : metrics_pkg::area = 8 B / 4 = 2
+//   1. Reset: the column is 0
+//   2. A new column every cycle
+//   3. load low while b_i changes: the column is kept
+//   4. Energy of one load = 2
+//   5. Area = 8 B / 4 = 2
 //
 // Run from the folder with the Makefile (see README.md):
 //   make TEST_MODULE=tb_b_buffer run
@@ -32,7 +29,7 @@ module tb_b_buffer;
   parameter int unsigned NumLoads        = 50;  // test 2
   parameter int unsigned HoldCycles      = 5;   // test 3
   parameter int unsigned MaxErrorsToShow = 5;   // per test
-  parameter int unsigned TimeoutCycles   = 100_000;  // safety net (cycles)
+  parameter int unsigned TimeoutCycles   = 100_000;  // stop after this many cycles
 
   //---------------------------
   // Wires
@@ -46,7 +43,7 @@ module tb_b_buffer;
   // Golden model: the stored column
   int golden [ArrK];
 
-  // Bookkeeping per test and in total
+  // Counters per test and in total
   string       test_name;
   int unsigned test_errors;
   int unsigned test_cycles;
@@ -79,7 +76,7 @@ module tb_b_buffer;
   // Stimulus and checking
   //---------------------------
 
-  // Compare the stored column with the golden model right now
+  // Compare the stored column with the golden model
   task automatic check_all();
     test_cycles++;
     for (int k = 0; k < ArrK; k++) begin
@@ -93,8 +90,7 @@ module tb_b_buffer;
     end
   endtask
 
-  // One clock cycle: on the falling edge, check the result of the previous
-  // cycle, then drive a new random column and update the golden model
+  // One cycle: check the output, then drive a new random column
   task automatic cycle(input bit load);
     @(negedge clk_i);
     check_all();
@@ -111,7 +107,7 @@ module tb_b_buffer;
     test_cycles = 0;
   endtask
 
-  // One idle cycle checks the last driven cycle, then report the test
+  // Check the last cycle and print the result
   task automatic end_test();
     cycle(1'b0);
     num_checks++;
@@ -162,7 +158,7 @@ module tb_b_buffer;
     end
     end_test();
 
-    // 5. Area: ArrK int8
+    // 5. Area
     expected_area = ArrK * InDataWidth / 32;
     num_checks++;
     if (metrics_pkg::area == expected_area) begin
@@ -187,8 +183,7 @@ module tb_b_buffer;
     end
   end
 
-  // Safety net: stop if the test hangs. Counted in clock cycles, so it does
-  // not depend on the time unit of the simulator.
+  // Stop if the test hangs
   initial begin
     repeat (TimeoutCycles) @(posedge clk_i);
     $fatal(1, "Timeout after %0d cycles", TimeoutCycles);

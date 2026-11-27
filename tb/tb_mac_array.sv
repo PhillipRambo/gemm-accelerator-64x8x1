@@ -1,36 +1,25 @@
 //--------------------------
 // MAC array testbench
-// - Unit test for mac_array (64 PEs x 8 multipliers = 512, 8 accumulators per PE)
-//
-// The PE itself is tested in tb_mac_pe_bank. This testbench checks the array
-// around it: that PE m gets row m of A, that the B column is broadcast to all
-// PEs, that acc_sel reaches every PE, and that c_o[m][j] is row m, column j.
-//
-// The golden model keeps one running sum per accumulator C[m][j]. When the
-// inputs are valid, accumulator acc_sel of every row loads (init_save) or adds
-// that row's dot product. Otherwise acc_clr zeros everything.
-//
-// Timing: inputs change on the falling edge and the DUT updates on the rising
-// edge. Every cycle, cycle() first checks ALL 64 x 8 accumulators against the
-// golden model (the result of the previous cycle) and then drives the next
-// inputs, so the accumulators that are not selected are checked as well.
+// - Unit test for mac_array (64 PEs x 8 multipliers, 8 accumulators per PE)
+// - The PE itself is tested in tb_mac_pe_bank. This test checks the wiring:
+//   PE m gets row m of A, all PEs get the same B column and acc_sel, and
+//   c_o[m][j] is row m, column j.
+// - Inputs change on the falling edge. Every cycle all 64 x 8 accumulators
+//   are compared with a golden model.
 //
 // Tests:
-//   1. Reset             : all accumulators are 0 after reset
-//   2. Interleaved blocks: k-steps outer, the 8 columns inner, like the loop
-//                          of the accelerator, with random A rows and B columns
-//   3. Stall             : valid low while init_save stays high: no change
-//   4. Clear             : acc_clr zeros all accumulators
-//   5. Priority          : valid wins over acc_clr
-//   6. Back-to-back      : the next block starts right after the last k-step,
-//                          so the finished block is complete in that cycle
-//   7. Extreme values    : -128 * -128 and -128 * 127 over K = 2048 (the
-//                          largest workload) in every PE and accumulator
-//   8. Area              : metrics_pkg::area = 64 PEs * 32 = 2048
+//   1. Reset: all accumulators are 0
+//   2. Blocks like in the accelerator: k-steps outer, 8 columns inner
+//   3. Stall: valid low with init_save high, nothing may change
+//   4. acc_clr clears all accumulators
+//   5. valid has priority over acc_clr
+//   6. Blocks back to back
+//   7. Extreme values -128 * -128 and -128 * 127 over K = 2048
+//   8. Area = 64 PEs * 32 = 2048
 //
 // Run from the folder with the Makefile (see README.md):
-//   make TEST_MODULE=tb_mac_array run             (simulate with Verilator)
-//   make TEST_MODULE=tb_mac_array questasim-run   (simulate with Questasim)
+//   make TEST_MODULE=tb_mac_array run             (Verilator)
+//   make TEST_MODULE=tb_mac_array questasim-run   (Questasim)
 //--------------------------
 
 module tb_mac_array;
@@ -55,7 +44,7 @@ module tb_mac_array;
   parameter int unsigned NumBackToBack   = 5;    // test 6
   parameter int unsigned ExtremeKSteps   = 256;  // test 7: K = 2048 / 8
   parameter int unsigned MaxErrorsToShow = 5;    // per test
-  parameter int unsigned TimeoutCycles   = 100_000;  // safety net (cycles)
+  parameter int unsigned TimeoutCycles   = 100_000;  // stop after this many cycles
 
   //---------------------------
   // Wires
@@ -70,14 +59,14 @@ module tb_mac_array;
   logic                                                 acc_clr_i;
   logic signed [ArrM-1:0][NumAcc-1:0][OutDataWidth-1:0] c_o;  // c_o[m][j]
 
-  // Golden model: expected value of every accumulator
+  // Golden model, one value per accumulator
   int golden [ArrM][NumAcc];
 
-  // Input data: random, or every A and B value fixed (test 7)
+  // Fixed input values for test 7
   bit fill_mode = 1'b0;
   int fill_a, fill_b;
 
-  // Bookkeeping per test and in total
+  // Counters per test and in total
   string       test_name;
   int unsigned test_errors;
   int unsigned test_cycles;
@@ -130,7 +119,7 @@ module tb_mac_array;
     foreach (golden[m, j]) golden[m][j] = 0;
   endtask
 
-  // Predict what the DUT does with the inputs driven now at the next rising edge
+  // What the DUT should do at the next rising edge
   task automatic golden_update();
     if (valid_i) begin
       for (int m = 0; m < ArrM; m++) begin
@@ -146,7 +135,7 @@ module tb_mac_array;
   // Stimulus and checking
   //---------------------------
 
-  // New A tile and B column: random, or the fixed fill values
+  // New A tile and B column
   task automatic new_data();
     for (int m = 0; m < ArrM; m++) begin
       for (int k = 0; k < ArrK; k++) begin
@@ -158,8 +147,7 @@ module tb_mac_array;
     end
   endtask
 
-  // Compare all accumulators with the golden model right now
-  // (c_o[m][j] is a select of a packed array, so it is unsigned: cast it)
+  // Compare all accumulators with the golden model
   task automatic check_all();
     test_cycles++;
     for (int m = 0; m < ArrM; m++) begin
@@ -175,8 +163,7 @@ module tb_mac_array;
     end
   endtask
 
-  // One clock cycle: on the falling edge, check the result of the previous
-  // cycle, then drive new inputs and controls and update the golden model
+  // One cycle: check the outputs, then drive new inputs
   task automatic cycle(input int unsigned sel, input bit valid, input bit init, input bit clr);
     @(negedge clk_i);
     check_all();
@@ -188,17 +175,17 @@ module tb_mac_array;
     golden_update();
   endtask
 
-  // A compute cycle on accumulator sel (first = first k-step: load)
+  // Compute on accumulator sel, first = first k-step
   task automatic k_step(input int unsigned sel, input bit first);
     cycle(sel, 1'b1, first, 1'b0);
   endtask
 
-  // Nothing valid (the inputs still change)
+  // No valid input
   task automatic idle();
     cycle(0, 1'b0, 1'b0, 1'b0);
   endtask
 
-  // One block like the accelerator loop: k-steps outer, the NumAcc columns inner
+  // One block: k-steps outer, columns inner
   task automatic block(input int unsigned k_steps);
     for (int k = 0; k < k_steps; k++) begin
       for (int n = 0; n < NumAcc; n++) begin
@@ -213,7 +200,7 @@ module tb_mac_array;
     test_cycles = 0;
   endtask
 
-  // One idle cycle checks the last driven cycle, then report the test
+  // Check the last cycle and print the result
   task automatic end_test();
     idle();
     num_checks++;
@@ -245,7 +232,7 @@ module tb_mac_array;
     repeat (3) idle();
     end_test();
 
-    // 2. Interleaved blocks with 1..MaxKSteps k-steps each
+    // 2. Blocks with 1 to MaxKSteps k-steps
     start_test($sformatf("2. %0d interleaved blocks (1..%0d k-steps)", NumBlocks, MaxKSteps));
     for (int b = 0; b < NumBlocks; b++) begin
       block($urandom_range(MaxKSteps, 1));
@@ -253,35 +240,34 @@ module tb_mac_array;
     end
     end_test();
 
-    // 3. Stall between two k-steps: valid low, init_save high, inputs changing
+    // 3. Stall between two k-steps
     start_test("3. stall with init_save high");
     block(1);
     repeat (StallCycles) cycle($urandom_range(NumAcc - 1), 1'b0, 1'b1, 1'b0);
     for (int n = 0; n < NumAcc; n++) k_step(n, 1'b0);  // second k-step adds on top
     end_test();
 
-    // 4. Clear, and the accumulators stay 0 afterwards
+    // 4. Clear
     start_test("4. acc_clr");
     cycle(0, 1'b0, 1'b0, 1'b1);
     repeat (2) idle();
     end_test();
 
-    // 5. Priority: valid wins over clear
+    // 5. valid before acc_clr
     start_test("5. valid wins over acc_clr");
     block(2);
     cycle(3, 1'b1, 1'b0, 1'b1);  // accumulator 3 of every row adds, nothing is cleared
     cycle(5, 1'b1, 1'b1, 1'b1);  // accumulator 5 of every row loads, nothing is cleared
     end_test();
 
-    // 6. Back-to-back blocks: the first cycle of block b+1 checks that
-    //    block b is complete, the cycle in which the output buffer copies it
+    // 6. Blocks back to back
     start_test($sformatf("6. %0d back-to-back blocks", NumBackToBack));
     repeat (NumBackToBack) block(4);
     end_test();
 
-    // 7. Extreme values over K = 2048 (256 k-steps per column)
-    //    -128 * -128 = +16384 per product -> 256 * 8 * 16384 = 33,554,432
-    //    -128 *  127 = -16256 per product -> 256 * 8 * -16256 = -33,292,288
+    // 7. Extreme values over K = 2048
+    //    256 * 8 * (-128 * -128) = 33554432
+    //    256 * 8 * (-128 * 127)  = -33292288
     fill_mode = 1'b1;
     fill_a    = -128;
     for (int pass = 0; pass < 2; pass++) begin
@@ -291,7 +277,7 @@ module tb_mac_array;
       start_test($sformatf("7. extreme values, A = -128, B = %0d, K = %0d",
                            fill_b, ExtremeKSteps * ArrK));
       block(ExtremeKSteps);
-      // The golden model must agree with the hand calculation as well
+      // Also check the golden model against the hand calculation
       foreach (golden[m, j]) begin
         if (golden[m][j] != expected) begin
           if (test_errors < MaxErrorsToShow) begin
@@ -305,7 +291,7 @@ module tb_mac_array;
     end
     fill_mode = 1'b0;
 
-    // 8. Area: every PE logs 3 * ArrK + NumAcc
+    // 8. Area
     expected_area = ArrM * (3 * ArrK + NumAcc * (OutDataWidth / 32));
     num_checks++;
     if (metrics_pkg::area == expected_area) begin
@@ -331,8 +317,7 @@ module tb_mac_array;
     end
   end
 
-  // Safety net: stop if the test hangs. Counted in clock cycles, so it does
-  // not depend on the time unit of the simulator.
+  // Stop if the test hangs
   initial begin
     repeat (TimeoutCycles) @(posedge clk_i);
     $fatal(1, "Timeout after %0d cycles", TimeoutCycles);

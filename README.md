@@ -57,7 +57,7 @@ The Makefile differs from the course's in two places. The Verilator binary is re
 - the six workloads of the assignment in one simulation without a reset between them, followed by six edge cases for the controller (partial N blocks, blocks of one tile or one column),
 - the normalized latency (1000 * cycles / MACs) and the score J in the final report.
 
-Memory layout (also in `rtl/gemm/gemm_controller.sv`):
+Memory layout (also in the header of `tb/tb_gemm_accelerator.sv`):
 
 - **A**, tile-major: tile (m_t, k_t) is 5 words from address (m_t * K/8 + k_t) * 5. Word w holds rows 13w ... 13w+12 of the tile, 8 int8 each, zero padded.
 - **B**: word k_t * N + n holds B[8k_t ... 8k_t+7][n].

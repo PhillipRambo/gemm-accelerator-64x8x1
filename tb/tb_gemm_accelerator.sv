@@ -1,19 +1,14 @@
 //--------------------------
 // Top-level testbench of the 64 x 8 x 1 GeMM/GeMV accelerator
+// - Based on the course testbench tb_one_mac_gemm.sv
+// - Uses the course includes/ for the golden model (gemm_golden), the start
+//   and cycle count (start_and_wait_gemm) and the check (verify_result_c)
+// - Runs the 6 workloads and 6 edge cases back to back without a reset
 //
-// Adapted from the course testbench tb_one_mac_gemm.sv. The structure is
-// kept: parameters, memories and DUT, then the sequence driver, and the
-// course's includes/ are used unchanged:
-// - gemm_golden (test_func.svh)         : golden model on flat row-major arrays
-// - start_and_wait_gemm (test_tasks.svh): start pulse, count cycles until done
-// - verify_result_c (test_tasks.svh)    : compare C with the golden C
-//
-//
-// Memory layouts (see rtl/gemm/gemm_controller.sv):
+// Memory layouts (also in README.md):
 // - A: tile-major. Tile (m_t, k_t) is 5 words from (m_t * K/8 + k_t) * 5.
-//      Word w holds rows 13w .. 13w+12 of the tile, 8 int8 each
-//      (row r of the word at byte 8r, value k at byte 8r + k), zero padded.
-// - B: word k_t * N + n holds B[8k_t .. 8k_t+7][n] (value k at byte k).
+//      Word w holds rows 13w to 13w+12 of the tile, 8 int8 each, zero padded.
+// - B: word k_t * N + n holds B[8k_t to 8k_t+7][n].
 // - C: column-major, 4 rows per word: C[m][n] is word n * M/4 + m/4, lane m % 4.
 //
 // Run from the folder with the Makefile (see README.md):
@@ -44,18 +39,16 @@ module tb_gemm_accelerator;
   localparam int unsigned PortBWidth = ArrK * InDataWidth;                      // 64 bits
   localparam int unsigned PortCWidth = WordOutputs * OutDataWidth;              // 128 bits
 
-  // SRAM depth: GeMV 3 needs 2816/64 * 2048/8 * 5 = 56,320 words of SRAM A.
-  // DataDepth is also the size of the flat arrays of the course functions.
+  // SRAM depth. GeMV 3 needs 2816/64 * 2048/8 * 5 = 56320 words of A.
+  // Also the size of the flat arrays in the course functions.
   parameter int unsigned DataDepth     = 65536;
   parameter int unsigned AddrWidth     = (DataDepth <= 1) ? 1 : $clog2(DataDepth);
 
   //---------------------------
   // Test cases
   //---------------------------
-  // GeMM: C (M x N) = A (M x K) * B (K x N)
-  // GeMV: y (M x 1) = A (M x K) * x (K x 1), which is a GeMM with N = 1
-  // workload = 1 marks the six cases of the assignment (they make up J).
-  // The accelerator needs M to be a multiple of 64 and K a multiple of 8.
+  // workload = 1 for the 6 cases of the assignment (used for J)
+  // M must be a multiple of 64 and K a multiple of 8
   //---------------------------
   typedef struct {
     string       name;
@@ -79,12 +72,12 @@ module tb_gemm_accelerator;
     '{"Edge 1",     64,    8,   1, 1'b0},   // one tile, one column
     '{"Edge 2",    128,   16,  12, 1'b0},   // 2 row tiles, a partial block of 4 columns
     '{"Edge 3",    192,   24,   9, 1'b0},   // 3 row tiles, a partial block of 1 column
-    '{"Edge 4",     64,    8,  24, 1'b0},   // 1 k-step per block: limited by port C
+    '{"Edge 4",     64,    8,  24, 1'b0},   // 1 k-step per block, limited by port C
     '{"Edge 5",    128,    8,   1, 1'b0},   // blocks of a single issue
     '{"Edge 6",     64,   16,  64, 1'b0}    // 8 blocks back to back
   };
 
-  // Per-case results, printed in the summary at the end
+  // Results per case for the final report
   int unsigned case_cycles [NumCases];
   real         case_energy [NumCases];
   int unsigned case_errors [NumCases];
@@ -106,8 +99,8 @@ module tb_gemm_accelerator;
   //---------------------------
   // Memory
   //---------------------------
-  // Flat row-major matrices (A in chunks of rows) and the golden data dump
-  logic signed [ InDataWidth-1:0] A_chunk  [DataDepth];   // rows m0 .. m0+rows-1 of A
+  // Flat row-major matrices, A is done in chunks of rows
+  logic signed [ InDataWidth-1:0] A_chunk  [DataDepth];   // some rows of A
   logic signed [ InDataWidth-1:0] B_flat   [DataDepth];
   logic signed [OutDataWidth-1:0] G_chunk  [DataDepth];   // golden C of those rows
   logic signed [OutDataWidth-1:0] G_memory [DataDepth];   // golden C, all rows
@@ -127,8 +120,7 @@ module tb_gemm_accelerator;
   logic                         sram_c_we;
 
   //---------------------------
-  // Declaration of input and output memories (the course macro, only the
-  // word width and depth are changed)
+  // Declaration of input and output memories (course macro, wider words)
   //---------------------------
 
   // Input memory A (read only), 104 B words
@@ -215,25 +207,23 @@ module tb_gemm_accelerator;
   `include "includes/test_tasks.svh"
   `include "includes/test_func.svh"
 
-  // Metrics variables live in metrics_pkg (rtl/common/metrics_pkg.sv):
-  // - metrics_pkg::area   starts at 0, each module adds its area at time 0
-  // - metrics_pkg::energy is reset right before each case starts and read
-  //                       right after it is done, so it holds one case only
+  // metrics_pkg::area is added by every module at time 0.
+  // metrics_pkg::energy is reset before each case and read after it.
 
   //---------------------------
-  // Packing into the accelerator's memory layout
+  // Packing into the memory layout of the accelerator
   //---------------------------
 
-  // SRAM A: zero all words of the case first (the padding must be 0)
+  // SRAM A: set all words of the case to 0 first (padding)
   task automatic clear_a(input int unsigned M, input int unsigned K);
     for (int unsigned addr = 0; addr < (M / ArrM) * (K / ArrK) * NumWords; addr++) begin
       i_sram_a.memory[addr] = '0;
     end
   endtask
 
-  // SRAM A, tile-major: rows m0 .. m0+rows-1 of A (in A_chunk) into their
-  // words. Row m, value k is in tile (m / 64, k / 8), word (m % 64) / 13,
-  // slot r = (m % 64) % 13, byte 8r + k % 8 of that word.
+  // SRAM A: write the rows in A_chunk into their tile words.
+  // Row m, value k goes to tile (m / 64, k / 8), word (m % 64) / 13,
+  // byte 8 * ((m % 64) % 13) + k % 8.
   task automatic pack_a_rows(input int unsigned m0, input int unsigned rows,
                              input int unsigned K);
     logic [PortAWidth-1:0] word;
@@ -253,7 +243,7 @@ module tb_gemm_accelerator;
     end
   endtask
 
-  // SRAM B: one word = 8 int8 of one column of one k-strip
+  // SRAM B: one word is 8 values of one column
   task automatic pack_b(input int unsigned K, input int unsigned N);
     logic [PortBWidth-1:0] word;
     for (int unsigned kt = 0; kt < K / ArrK; kt++) begin
@@ -266,14 +256,14 @@ module tb_gemm_accelerator;
     end
   endtask
 
-  // SRAM C: fill with a marker, so a word the DUT never writes is an error
+  // SRAM C: fill with DEADBEEF so missing writes show up as errors
   task automatic clear_c(input int unsigned M, input int unsigned N);
     for (int unsigned addr = 0; addr < M * N / WordOutputs; addr++) begin
       i_sram_c.memory[addr] = {WordOutputs{32'hDEAD_BEEF}};
     end
   endtask
 
-  // SRAM C -> flat row-major C: C[m][n] is word n * M/4 + m/4, lane m % 4
+  // SRAM C to flat row-major C
   task automatic unpack_c(input int unsigned M, input int unsigned N);
     logic [PortCWidth-1:0] word;
     for (int unsigned n = 0; n < N; n++) begin
@@ -298,7 +288,7 @@ module tb_gemm_accelerator;
   initial begin
     int unsigned chunk_rows;   // rows of A per gemm_golden call
 
-    // Initial reset (only once: the cases run back to back without a reset)
+    // Reset only once, the cases run back to back
     start  = 1'b0;
     M_i    = '0;
     K_i    = '0;
@@ -323,8 +313,8 @@ module tb_gemm_accelerator;
       end
       pack_b(K_i, N_i);
 
-      // A in chunks of rows that fit in the course's arrays: random data,
-      // golden result of those rows (course function), then pack into SRAM A
+      // A is made in chunks of rows that fit in the course arrays.
+      // For each chunk: random data, golden result, pack into SRAM A
       clear_a(M_i, K_i);
       for (int unsigned m0 = 0; m0 < M_i; m0 += chunk_rows) begin
         chunk_rows = DataDepth / K_i;                         // rows that fit
@@ -345,12 +335,12 @@ module tb_gemm_accelerator;
       // Just delay 1 cycle
       clk_delay(1);
 
-      // Count energy for this case only: from start until done
+      // Energy of this case only
       metrics_pkg::energy = 0;
       start_and_wait_gemm(case_cycles[c]);
       case_energy[c] = metrics_pkg::energy;
 
-      // Verify the result (course task on the unpacked SRAM C)
+      // Verify the result
       unpack_c(M_i, N_i);
       test_depth = M_i * N_i;
       verify_result_c(G_memory, C_flat, test_depth,
@@ -373,8 +363,7 @@ module tb_gemm_accelerator;
   //---------------------------
   // Final report
   //---------------------------
-  // Left-align a string to a fixed width
-  // (avoids %-Ns, which some simulators format differently)
+  // Pad a string with spaces to a fixed width
   function automatic string pad(string str, int unsigned width);
     while (str.len() < width) str = {str, " "};
     return str;

@@ -2,38 +2,33 @@
 // Output buffer
 //
 // Description:
-// This module takes a finished block of the MAC array (ArrM x NumAcc int32 =
-// 64 rows x 8 columns = 2 KB) in ONE cycle and then drains it to SRAM C, one
-// 16 B word (WordOutputs = 4 int32) per cycle, while the array already
-// computes the next block.
+// Copies a finished block from the MAC array (64 x 8 int32) in one cycle
+// and writes it to SRAM C one word (4 int32) per cycle, while the array
+// works on the next block.
 //
-// Drain order: column by column, and inside a column 4 rows per word, so word
-// (col, grp) holds C[4*grp ... 4*grp+3][col] with data_o[i] = row 4*grp + i.
-// A full block is 8 columns x 16 words = 128 cycles. A block can have fewer
-// columns (num_cols_i, a GeMV block has 1): only those are copied and drained.
-// The controller turns (col_o, grp_o) into the SRAM C address.
-//
-// ready_o is high when a load is accepted: when the buffer is empty, or in
-// the cycle of the last word, so that blocks can follow without a gap.
-// The controller must only load when ready_o is high.
+// The words go out column by column, 16 words per column, so a full block
+// takes 128 cycles. A block can have fewer columns (num_cols_i, 1 for a
+// GeMV), then only those columns are copied and written.
+// ready_o is high when the buffer is empty or on its last word, so the
+// next block can be loaded without a gap.
 //
 // Parameters:
-// - OutDataWidth : Width of the output data (int32)
-// - ArrM         : Number of rows in a block (one per PE)
-// - NumAcc       : Number of columns in a full block (accumulators per PE)
-// - WordOutputs  : Outputs in one SRAM C word (16 B / 4 B = 4)
+// - OutDataWidth : Width of the output data
+// - ArrM         : Rows in a block (one per PE)
+// - NumAcc       : Columns in a full block
+// - WordOutputs  : Values in one SRAM C word
 //
 // Ports:
 // - clk_i        : Clock input
 // - rst_ni       : Active-low reset input
-// - load_i       : Copy the block from the array (only when ready_o is high)
-// - num_cols_i   : Columns in this block, 1 .. NumAcc
-// - c_i          : All accumulators of the array, c_i[m][j] = row m, column j
-// - ready_o      : A load is accepted in this cycle
-// - wr_en_o      : data_o is a valid word for SRAM C in this cycle
-// - col_o        : Column of the block that data_o belongs to
-// - grp_o        : Row group of data_o (rows 4*grp_o ... 4*grp_o+3)
-// - data_o       : One SRAM C word, data_o[i] = C[4*grp_o + i][col_o]
+// - load_i       : Copy a block (only when ready_o is high)
+// - num_cols_i   : Columns in the block (1 to 8)
+// - c_i          : Accumulators of the array, c_i[m][j]
+// - ready_o      : A new block can be loaded
+// - wr_en_o      : data_o should be written to SRAM C
+// - col_o        : Column of the word
+// - grp_o        : Row group of the word (rows 4*grp_o to 4*grp_o+3)
+// - data_o       : The word, data_o[i] = C[4*grp_o + i][col_o]
 //---------------------------
 
 module output_buffer #(
@@ -41,35 +36,35 @@ module output_buffer #(
   parameter int unsigned ArrM = 64,
   parameter int unsigned NumAcc = 8,
   parameter int unsigned WordOutputs = 4,
-  // Words per column: 64 / 4 = 16
+  // 16 words per column
   parameter int unsigned NumGroups = ArrM / WordOutputs
 ) (
   input  logic clk_i,
   input  logic rst_ni,
-  // Load side (from the MAC array)
+  // From the MAC array
   input  logic load_i,
   input  logic [$clog2(NumAcc+1)-1:0] num_cols_i,
   input  logic signed [ArrM-1:0][NumAcc-1:0][OutDataWidth-1:0] c_i,
   output logic ready_o,
-  // Drain side (to SRAM C)
+  // To SRAM C
   output logic wr_en_o,
   output logic [$clog2(NumAcc)-1:0] col_o,
   output logic [$clog2(NumGroups)-1:0] grp_o,
   output logic signed [WordOutputs-1:0][OutDataWidth-1:0] data_o
 );
 
-  // Storage and drain state
+  // Block storage and drain counters
   logic signed [ArrM-1:0][NumAcc-1:0][OutDataWidth-1:0] buf_q;
-  logic busy_q;   // a block is draining
+  logic busy_q;   // a block is being written out
   logic [$clog2(NumAcc+1)-1:0] cols_q;   // columns of that block
-  logic [$clog2(NumAcc)-1:0] col_q;    // word being drained:
-  logic [$clog2(NumGroups)-1:0] grp_q;    // column and row group
+  logic [$clog2(NumAcc)-1:0] col_q;    // column of the current word
+  logic [$clog2(NumGroups)-1:0] grp_q;    // row group of the current word
   logic last_word;
 
   assign last_word = busy_q && (grp_q == NumGroups - 1) && (col_q == cols_q - 1);
   assign ready_o = !busy_q || last_word;
 
-  // Copy on load, otherwise step through the words of the block
+  // Copy a block on load, otherwise go to the next word
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
       for (int m = 0; m < ArrM; m++) buf_q[m] <= '0;
@@ -80,7 +75,7 @@ module output_buffer #(
     end else if (load_i) begin
       for (int m = 0; m < ArrM; m++) begin
         for (int j = 0; j < NumAcc; j++) begin
-          if (j < num_cols_i) buf_q[m][j] <= c_i[m][j];   // unused columns keep their clock off
+          if (j < num_cols_i) buf_q[m][j] <= c_i[m][j];   // only the used columns
         end
       end
       busy_q <= 1'b1;
@@ -101,7 +96,7 @@ module output_buffer #(
     end
   end
 
-  // The word being drained (a mux, reading the buffer is free)
+  // Current word
   always_comb begin
     for (int i = 0; i < WordOutputs; i++) begin
       data_o[i] = buf_q[grp_q * WordOutputs + i][col_q];
@@ -112,7 +107,7 @@ module output_buffer #(
   assign col_o   = col_q;
   assign grp_o   = grp_q;
 
-  // Wrong use by the controller
+  // Checks for wrong use
   always @(posedge clk_i) begin
     if (rst_ni && load_i && !ready_o) begin
       $error("%m: load while the previous block is still draining");
@@ -123,8 +118,8 @@ module output_buffer #(
   end
 
   //--------------------------------
-  // Area logging (Table 3: 1 per 32-bit register)
-  // ArrM x NumAcc int32 = 64 * 8 = 512
+  // Area logging
+  // 1 per 32-bit register: 64 * 8 = 512
   //--------------------------------
   initial begin
     #0;
@@ -133,9 +128,9 @@ module output_buffer #(
   end
 
   //--------------------------------
-  // Energy logging (Table 3: 1 per 32-bit register update)
-  // A load updates ArrM registers per column of the block: 64 per column,
-  // 512 for a full block. Draining only reads, which is free.
+  // Energy logging
+  // 1 per 32-bit register that is written, so 64 per column.
+  // Writing the words out only reads the buffer, which is free.
   //--------------------------------
   always @(posedge clk_i) begin
     if (rst_ni && load_i) begin

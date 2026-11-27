@@ -1,29 +1,22 @@
 //--------------------------
 // Output buffer testbench
-// - Unit test for output_buffer (64 x 8 int32, drained in 16 B words of 4 int32)
-//
-// Scoreboard: when a block is loaded, the testbench queues the words it must
-// produce, column by column and 4 rows per word. Every cycle with wr_en_o the
-// next word is taken from the queue and compared (data, column and row
-// group). wr_en_o must be high exactly while words are left, and ready_o must
-// be high exactly when no word is left after the current one.
-//
-// Timing: inputs change on the falling edge and the DUT updates on the rising
-// edge. Every cycle, cycle() first checks the outputs and then drives new
-// inputs. c_i gets new random values every cycle, like the array that keeps
-// computing, so every test also checks that the drain uses the copy.
-// A load is only requested when ready_o is high, as the controller will do.
+// - Unit test for output_buffer (64 x 8 int32, written out in words of 4 int32)
+// - When a block is loaded, the words it should give are put in a queue.
+//   Every cycle with wr_en_o the next word is taken from the queue and
+//   compared (data, column and row group).
+// - c_i changes every cycle like the array does, so the test also checks
+//   that the buffer writes out its own copy. A load is only requested when
+//   ready_o is high, like the controller does.
 //
 // Tests:
-//   1. Reset          : nothing to write, ready
-//   2. Full block     : 8 columns = 128 words, in order, with c_i changing
-//   3. Partial blocks : 1 column (a GeMV block, 16 words) and 3 columns
-//   4. Back-to-back   : the next block loads in the cycle of the last word,
-//                       so the drain has no gap
-//   5. Random blocks  : random column counts and idle gaps
-//   6. Extreme values : -2^31 and 2^31 - 1 come out unchanged
-//   7. Energy         : a load costs 64 per column (1 per 32-bit register)
-//   8. Area           : metrics_pkg::area = 64 * 8 = 512
+//   1. Reset: nothing to write, ready
+//   2. Full block: 8 columns = 128 words in the right order
+//   3. Partial blocks of 1 and 3 columns
+//   4. Blocks back to back, the next load comes on the last word
+//   5. Random column counts and gaps
+//   6. Extreme values -2^31 and 2^31 - 1
+//   7. Energy of a load = 64 per column
+//   8. Area = 64 * 8 = 512
 //
 // Run from the folder with the Makefile (see README.md):
 //   make TEST_MODULE=tb_output_buffer run
@@ -51,7 +44,7 @@ module tb_output_buffer;
   parameter int unsigned NumRandomBlocks = 30;  // test 5
   parameter int unsigned MaxGap          = 3;   // test 5: idle cycles between blocks
   parameter int unsigned MaxErrorsToShow = 5;   // per test
-  parameter int unsigned TimeoutCycles   = 100_000;  // safety net (cycles)
+  parameter int unsigned TimeoutCycles   = 100_000;  // stop after this many cycles
 
   //---------------------------
   // Wires
@@ -67,7 +60,7 @@ module tb_output_buffer;
   logic        [GrpWidth-1:0]                           grp_o;
   logic signed [WordOutputs-1:0][OutDataWidth-1:0]      data_o;  // data_o[i]
 
-  // Scoreboard: the words still to come, in order
+  // Queue of the words that should come out
   typedef struct packed {
     logic [ColWidth-1:0]                      col;
     logic [GrpWidth-1:0]                      grp;
@@ -76,10 +69,10 @@ module tb_output_buffer;
 
   word_t expected_q [$];
 
-  // Input data: random, or alternating -2^31 / 2^31 - 1 (test 6)
+  // Extreme values for test 6
   bit extreme_mode = 1'b0;
 
-  // Bookkeeping per test and in total
+  // Counters per test and in total
   string       test_name;
   int unsigned test_errors;
   int unsigned test_cycles;
@@ -129,8 +122,8 @@ module tb_output_buffer;
     end
   endtask
 
-  // Queue the words of the block that is loaded now: column by column,
-  // and inside a column rows 4g ... 4g+3 in word g
+  // Put the words of the loaded block in the queue,
+  // column by column, rows 4g to 4g+3 in word g
   task automatic push_block(input int unsigned cols);
     for (int j = 0; j < cols; j++) begin
       for (int g = 0; g < NumGroups; g++) begin
@@ -150,7 +143,7 @@ module tb_output_buffer;
     test_errors++;
   endtask
 
-  // Check the outputs of this cycle against the scoreboard
+  // Check the outputs of this cycle against the queue
   task automatic check_outputs();
     word_t exp;
     test_cycles++;
@@ -174,9 +167,8 @@ module tb_output_buffer;
     end
   endtask
 
-  // One clock cycle: on the falling edge, check this cycle's outputs, then
-  // drive new inputs. A requested load only happens when ready_o is high,
-  // and loaded tells the caller whether it did.
+  // One cycle: check the outputs, then drive new inputs.
+  // A load only happens when ready_o is high, loaded says if it did.
   task automatic cycle(input bit want_load, input int unsigned cols, output bit loaded);
     @(negedge clk_i);
     check_outputs();
@@ -192,7 +184,7 @@ module tb_output_buffer;
     cycle(1'b0, 1, loaded);
   endtask
 
-  // Load a block of cols columns as soon as the buffer is ready
+  // Load a block as soon as the buffer is ready
   task automatic send_block(input int unsigned cols);
     bit loaded;
     do cycle(1'b1, cols, loaded); while (!loaded);
@@ -208,7 +200,7 @@ module tb_output_buffer;
     test_cycles = 0;
   endtask
 
-  // Drain everything, check one more idle cycle, then report the test
+  // Write out everything, check one more cycle and print the result
   task automatic end_test();
     wait_drained();
     idle();
@@ -237,7 +229,7 @@ module tb_output_buffer;
     repeat (3) idle();
     end_test();
 
-    // 2. One full block: 128 words while c_i keeps changing
+    // 2. One full block while c_i keeps changing
     start_test("2. full block (8 columns, 128 words)");
     send_block(NumAcc);
     end_test();
@@ -249,7 +241,7 @@ module tb_output_buffer;
     send_block(3);
     end_test();
 
-    // 4. Back-to-back: each load comes in the cycle of the last word
+    // 4. Back to back, each load comes on the last word
     start_test($sformatf("4. %0d full blocks back to back", NumBackToBack));
     repeat (NumBackToBack) send_block(NumAcc);
     end_test();
@@ -269,7 +261,7 @@ module tb_output_buffer;
     end_test();
     extreme_mode = 1'b0;
 
-    // 7. Energy of a load: 64 per column, for 1 and for 8 columns
+    // 7. Energy of a load, for 1 and for 8 columns
     start_test("7. energy of a load = 64 per column");
     for (int pass = 0; pass < 2; pass++) begin
       int unsigned cols = (pass == 0) ? 1 : NumAcc;
@@ -285,7 +277,7 @@ module tb_output_buffer;
     end
     end_test();
 
-    // 8. Area: ArrM x NumAcc int32
+    // 8. Area
     expected_area = ArrM * NumAcc * OutDataWidth / 32;
     num_checks++;
     if (metrics_pkg::area == expected_area) begin
@@ -310,8 +302,7 @@ module tb_output_buffer;
     end
   end
 
-  // Safety net: stop if the test hangs. Counted in clock cycles, so it does
-  // not depend on the time unit of the simulator.
+  // Stop if the test hangs
   initial begin
     repeat (TimeoutCycles) @(posedge clk_i);
     $fatal(1, "Timeout after %0d cycles", TimeoutCycles);

@@ -125,8 +125,7 @@ module mac_pe_bank #(
   end
   endgenerate
 
-  // one hook per accumulator, so only the accumulators that change cost energy
-  // (normally 1 per cycle, a clear of the whole bank counts every changed one)
+  // one hook per accumulator, so only the accumulator that changes costs energy
   genvar j;
   generate for (j = 0; j < NumAcc; j++) begin : g_acc_energy
     always @ (c_o[j]) begin
